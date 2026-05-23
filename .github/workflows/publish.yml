@@ -20,8 +20,8 @@ jobs:
         # Ubuntu has all C++ compilers, so node-llama-cpp will install perfectly here
         run: npm install
 
-      - name: Build TypeScript
-        run: npm run build
+      #- name: Build TypeScript
+      #  run: npm run build
 
       - name: Publish to NPM
         run: npm publish
