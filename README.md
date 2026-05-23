@@ -1,4 +1,4 @@
-# Clinch CLI (`clinch-cli`)
+# Agent Clinch (`agent-clinch`)
 
 > **Agent Negotiation Protocol — Terminal Client & Autonomous Agent Q**
 
@@ -13,7 +13,7 @@ By keeping the execution edge-first, all cryptographic keys, session transcripts
 Install the CLI globally via NPM:
 
 ```bash
-npm install -g clinch-cli
+npm install -g agent-clinch
 ```
 
 *Note: To use the conversational wizard or the `--auto` flag (which allows the local LLM to parse your intent and negotiate autonomously), you must have `node-llama-cpp` installed globally or in your environment:*
