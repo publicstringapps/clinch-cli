@@ -1,0 +1,24 @@
+{
+  
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+
+
+  "name": "clinch-cli",
+  "version": "0.1.0",
+  "description": "Clinch Protocol CLI — agent negotiation from your terminal",
+  "main": "cli.js",
+  "bin": {
+    "clinch": "./cli.js"
+  },
+  "scripts": {
+    "start": "node cli.js"
+  },
+
+  "dependencies": {
+    "commander": "^14.0.3",
+    "node-llama-cpp": "^3.18.1",
+    "clinch-core": "0.1.0"
+  }
+}
