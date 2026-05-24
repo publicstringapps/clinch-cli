@@ -13,6 +13,7 @@ const readline = require('readline');
 const CONFIG_DIR  = path.join(os.homedir(), '.clinch');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 const SESSIONS_FILE = path.join(CONFIG_DIR, 'sessions.json');
+const DEALS_FILE  = path.join(CONFIG_DIR, 'deals.json'); // Restored
 
 // ── Persistence Helpers ───────────────────────────────────────
 function loadConfig() {
@@ -402,6 +403,6 @@ program
 program
   .name('clinch')
   .description('Clinch Protocol — Agent Negotiation CLI')
-  .version('0.2.0');
+  .version('0.4.0');
 
 program.parse();
