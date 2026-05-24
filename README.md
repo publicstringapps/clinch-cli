@@ -4,7 +4,7 @@
 
 The Clinch CLI is the official reference implementation of a Clinch Protocol buyer agent. It allows you to discover sellers, negotiate deals interactively, or dispatch an autonomous local AI agent ("Agent Q") to haggle on your behalf—right from your terminal.
 
-By keeping the execution edge-first, all cryptographic keys, session transcripts, downloaded models, and deal artifacts are stored strictly on your local machine.
+By keeping the execution edge-first, all cryptographic keys, session transcripts, downloaded models, and deal artifacts are stored strictly on your local machine. With robust state serialization, you can even close your terminal and resume dropped or asynchronous negotiations later.
 
 ---
 
@@ -44,7 +44,7 @@ The easiest way to use Clinch is to simply type:
 clinch negotiate
 ```
 
-Instead of memorizing flags and seller domains, the CLI boots a local LLM to ask what you want in plain English. 
+Instead of memorizing flags and routing prefixes, the CLI boots a local LLM to ask what you want in plain English.
 
 ```text
 💬 Clinch Onboarding Wizard — Tell me what you're looking for.
@@ -63,14 +63,14 @@ Instead of memorizing flags and seller domains, the CLI boots a local LLM to ask
   - Must Haves:  warranty, fast shipping
 ```
 
-Agent Q parses your natural language into a strict JSON `ConstraintVector`, queries the Clinch Registry to find matching sellers, and lets you select your target. It then seamlessly transitions into the negotiation phase.
+Agent Q parses your natural language into a strict JSON constraint vector, queries the Clinch Registry to find matching sellers, and lets you select your target. It then seamlessly transitions into the negotiation phase.
 
 ### 3. Explicit Negotiation (Manual or Auto Mode)
-If you already know the seller's address and want to bypass the wizard, you can pass arguments directly:
+If you already know the seller's address and want to bypass the wizard, you can pass arguments directly. **Note: Clinch Protocol requires strict routing prefixes (e.g., `ANP/C.`) on all addresses.**
 
 **Manual Mode:** Open an interactive terminal where you manually input counter-offers.
 ```bash
-clinch negotiate ANP/A.amazon.anp --category "electronics" --item "Ninja Blender" --budget 85.00
+clinch negotiate ANP/C.amazon.anp --budget 85.00
 ```
 *   Type a number (e.g., `45.50`) to send a counter-offer.
 *   Type `accept` to seal the deal.
@@ -78,7 +78,20 @@ clinch negotiate ANP/A.amazon.anp --category "electronics" --item "Ninja Blender
 
 **Auto Mode:** Add the `--auto` flag to hand control over to the local LLM Sandbox (Qwen 2.5 1.5B). The agent will evaluate the seller's offers and negotiate autonomously up to your strict max budget.
 ```bash
-clinch negotiate ANP/A.cloudflare.anp --category "domain" --item "my-startup.io" --budget 50.00 --auto
+clinch negotiate ANP/C.cloudflare.anp --budget 50.00 --auto
+```
+
+### 4. Resuming Asynchronous Sessions
+If you exit a negotiation before it concludes, or a seller places your offer in an asynchronous callback queue, the CLI automatically saves your exact session state and cryptographic session keys to disk.
+
+List your saved sessions:
+```bash
+clinch sessions
+```
+
+Resume a specific session and listen for webhooks/callbacks:
+```bash
+clinch resume sess_a1b2c3d4 --auto
 ```
 
 ---
@@ -87,43 +100,25 @@ clinch negotiate ANP/A.cloudflare.anp --category "domain" --item "my-startup.io"
 
 ### `clinch init [options]`
 Initializes the agent and performs network registration.
-*   `--registry <url>`: Override the default dynamic router.
+*   `--registry <url>`: Override the default dynamic router (Useful for local testing).
 *   `--model <path>`: Specify a custom path for the `.gguf` model file.
 
 ### `clinch query <category> [options]`
 Queries the registry for seller nodes.
-*   `--mode <mode>`: Filter by agent protocol mode (e.g., `ANP/A`, `ANP/C`).
-*   `--json`: Output raw JSON for scripting.
+*   `--mode <mode>`: Filter by agent protocol mode (e.g., `ANP/C`).
 
 ### `clinch negotiate [address] [options]`
-Opens a session with a target seller address. If `address` or `--budget` are omitted, launches the conversational wizard.
+Opens a session with a target seller address. If `address` or `--budget` are omitted, launches the conversational wizard. 
+*   `[address]`: The target seller address MUST include the protocol prefix (e.g., `ANP/C.seller_domain`).
 *   `--budget <n>`: Your absolute maximum budget in USD.
-*   `--item <name>`: The specific item being negotiated.
-*   `--category <name>`: The market category.
-*   `--intent <intent>`: e.g., `purchase`, `lease`.
 *   `--auto`: Delegates turn-based negotiation to the local AI sandbox.
 
-### `clinch sessions [options]`
-Lists historical and active negotiation sessions.
-*   `--last <n>`: Number of recent sessions to show (Default: 20).
-*   `--outcome <s>`: Filter by `ACTIVE`, `CONVERGED`, or `STALEMATE`.
+### `clinch sessions`
+Lists all historical and active negotiation sessions stored on your machine, displaying the session ID, target seller, current turn, and status.
 
-### `clinch deals [options]`
-Lists successfully converged, cryptographically signed deal artifacts.
-*   `--verify <id>`: Fetches the deal artifact from the network and validates the cryptographic chain, Registry signature, and Seller signature.
-
-### `clinch callbacks [options]`
-Connects to the WebSocket queue and listens for incoming, asynchronous counter-offers from sellers you previously `exit`ed on.
-*   `--pending`: Only show unread callbacks.
-
-### `clinch config [options]`
-View or update your agent's local configuration variables.
-*   `--mode <mode>`: Update default handshake mode.
-*   `--registry <url>`: Point CLI to a new registry network.
-*   `--local-only <bool>`: Opt-out of anonymous session reporting.
-
-### `clinch status`
-Pings the active Registry network to check health and latency.
+### `clinch resume <sessionId> [options]`
+Rehydrates a specific session's state and cryptographic keys into memory to continue negotiating or wait for remote seller callbacks.
+*   `--auto`: Immediately hands the resumed session back to the local AI sandbox to evaluate incoming callbacks.
 
 ---
 
@@ -132,6 +127,5 @@ Pings the active Registry network to check health and latency.
 The Clinch CLI operates on a strict zero-trust, edge-first model. Your data never leaves your machine unless explicitly sent as a constraint during a session.
 
 All state is stored locally in your home directory (`~/.clinch/`):
-*   `config.json`: Your identity keys, JWT token, and preferences. **Do not share this file.**
-*   `sessions.json`: Local transcripts of your negotiations.
-*   `deals.json`: Your cryptographic deal artifacts.
+*   `config.json`: Your identity keys and JWT token. **Do not share this file.**
+*   `sessions.json`: Local transcripts, current turns, constraint vectors, and the ephemeral Ed25519 session keys necessary to prove your identity during resumed negotiations.
