@@ -2,9 +2,9 @@
 
 > **Agent Negotiation Protocol — Terminal Client & Autonomous Agent Q**
 
-The Clinch CLI is the official reference implementation of a Clinch Protocol buyer agent. It allows you to discover sellers, negotiate deals interactively, or dispatch an autonomous local AI agent ("Agent Q") to haggle on your behalf—right from your terminal.
+The Clinch CLI is the official reference implementation of a Clinch Protocol buyer agent. It allows you to discover sellers, negotiate deals interactively, or dispatch an autonomous local AI agent using "Agent Q" (agent query) to haggle on your behalf—right from your terminal.
 
-By keeping the execution edge-first, all cryptographic keys, session transcripts, downloaded models, and deal artifacts are stored strictly on your local machine. With robust state serialization, you can even close your terminal and resume dropped or asynchronous negotiations later.
+By keeping the execution edge-first, all cryptographic keys, session transcripts, downloaded models, and dynamic session states are stored strictly on your local machine. With robust state serialization, you can even close your terminal and resume dropped or asynchronous negotiations later.
 
 ---
 
@@ -91,7 +91,7 @@ clinch sessions
 
 Resume a specific session and listen for webhooks/callbacks:
 ```bash
-clinch resume sess_a1b2c3d4 --auto
+clinch resume <sessionId> --auto
 ```
 
 ---
@@ -100,7 +100,7 @@ clinch resume sess_a1b2c3d4 --auto
 
 ### `clinch init [options]`
 Initializes the agent and performs network registration.
-*   `--registry <url>`: Override the default dynamic router (Useful for local testing).
+*   `--registry <url>`: Override the default dynamic registry configuration (Useful for local testing).
 *   `--model <path>`: Specify a custom path for the `.gguf` model file.
 
 ### `clinch query <category> [options]`
@@ -127,5 +127,6 @@ Rehydrates a specific session's state and cryptographic keys into memory to cont
 The Clinch CLI operates on a strict zero-trust, edge-first model. Your data never leaves your machine unless explicitly sent as a constraint during a session.
 
 All state is stored locally in your home directory (`~/.clinch/`):
-*   `config.json`: Your identity keys and JWT token. **Do not share this file.**
+*   `config.json`: Your identity keys, Registry authorization token, and preferences. **Do not share this file.**
 *   `sessions.json`: Local transcripts, current turns, constraint vectors, and the ephemeral Ed25519 session keys necessary to prove your identity during resumed negotiations.
+*   `deals.json`: Placeholder for cryptographically signed deal artifacts (Implementation upcoming).
