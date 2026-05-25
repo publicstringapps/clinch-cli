@@ -9,13 +9,74 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const readline = require('readline');
+const crypto = require('crypto');
 
 const CONFIG_DIR  = path.join(os.homedir(), '.clinch');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 const SESSIONS_FILE = path.join(CONFIG_DIR, 'sessions.json');
-const DEALS_FILE  = path.join(CONFIG_DIR, 'deals.json'); // Restored
+const DEALS_FILE  = path.join(CONFIG_DIR, 'deals.json');
+const SECRETS_FILE = path.join(CONFIG_DIR, 'secrets.json');
 
-// ── Persistence Helpers ───────────────────────────────────────
+// ── Cryptographic Key Vault Helpers (Blind Key Pass) ─────────
+function getEncryptionKey() {
+  const salt = 'clinch-local-secret-salt-398457';
+  const machineId = os.hostname() + os.arch() + os.platform() + os.userInfo().username;
+  return crypto.pbkdf2Sync(machineId, salt, 10000, 32, 'sha256');
+}
+
+function encrypt(text) {
+  const key = getEncryptionKey();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  let encrypted = cipher.update(text, 'utf8', 'hex');
+  encrypted += cipher.final('hex');
+  const authTag = cipher.getAuthTag().toString('hex');
+  return JSON.stringify({ iv: iv.toString('hex'), data: encrypted, tag: authTag });
+}
+
+function decrypt(encJson) {
+  try {
+    const key = getEncryptionKey();
+    const { iv, data, tag } = JSON.parse(encJson);
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(iv, 'hex'));
+    decipher.setAuthTag(Buffer.from(tag, 'hex'));
+    let decrypted = decipher.update(data, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    return decrypted;
+  } catch (e) {
+    return null; // Decryption failed (file moved to different machine or tampered)
+  }
+}
+
+function loadSecrets() {
+  if (!fs.existsSync(SECRETS_FILE)) return {};
+  try {
+    const encryptedRaw = JSON.parse(fs.readFileSync(SECRETS_FILE, 'utf8'));
+    const decrypted = {};
+    for (const [domain, payload] of Object.entries(encryptedRaw)) {
+      const decryptedValue = decrypt(payload.encValue);
+      if (decryptedValue) {
+        decrypted[domain] = { key: decryptedValue, name: payload.name };
+      }
+    }
+    return decrypted;
+  } catch {
+    return {};
+  }
+}
+
+function saveSecrets(secrets) {
+  const encryptedRaw = {};
+  for (const [domain, payload] of Object.entries(secrets)) {
+    encryptedRaw[domain] = {
+      name: payload.name,
+      encValue: encrypt(payload.key)
+    };
+  }
+  fs.writeFileSync(SECRETS_FILE, JSON.stringify(encryptedRaw, null, 2), { mode: 0o600 });
+}
+
+// ── Config & Session Persistence Helpers ──────────────────────
 function loadConfig() {
   if (!fs.existsSync(CONFIG_FILE)) return null;
   return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
@@ -63,6 +124,12 @@ function getClinchCore(cfg) {
   }
   const { ClinchCore } = ClinchCoreModule;
   const core = new ClinchCore({ registryUrl: cfg.registryUrl });
+
+  // Dynamically hydrate ClinchCore memory with locally stored API keys
+  const secrets = loadSecrets();
+  for (const [domain, s] of Object.entries(secrets)) {
+    core.registerSecret(domain, s.key, s.name);
+  }
 
   core.on('log', msg => console.log(msg));
   core.on('error', err => console.error('Error:', err.message));
@@ -224,8 +291,12 @@ program
 program
   .command('negotiate')
   .description('Start a negotiation with a seller agent')
-  .argument('[address]', 'ANP address — format: MODE.domain.anp (e.g. ANP/A.amazon.anp)')
+  .argument('[address]', 'ANP address — format: MODE.domain.anp (e.g. ANP/C.amazon.anp)')
   .option('--budget <n>', 'Max budget (USD)')
+  .option('--item <name>', 'Specific item to negotiate')
+  .option('--category <name>', 'Market category (Triggers cascade negotiation across matching sellers if address is omitted)')
+  .option('--squeeze <n>', 'Number of sellers to sequentially squeeze (Low urgency / price optimization)', '3')
+  .option('--parallel <n>', 'Number of sellers to negotiate with simultaneously in parallel (High urgency / ride-hailing)')
   .option('--auto', 'Run sandbox auto-negotiation')
   .action(async (address, opts) => {
     const cfg = requireConfig();
@@ -234,7 +305,7 @@ program
     let constraints = {};
 
     // ── WIZARD MODE ──
-    if (!targetAddress || !budget) {
+    if (!targetAddress && !opts.category && !budget) {
       banner();
       console.log(c.bold("💬 Clinch Onboarding Wizard — Tell me what you're looking for.\n"));
 
@@ -277,22 +348,59 @@ program
         targetAddress = `ANP/C.${sellers[parseInt(selection) - 1].agent_id}`;
       }
     } else {
-      constraints = { intent: 'purchase', item: 'Item', max_budget: parseFloat(budget) };
+      constraints = { 
+        intent: 'purchase', 
+        item: opts.item || 'Item', 
+        max_budget: parseFloat(budget || 100) 
+      };
+      if (opts.category) constraints.category = opts.category;
     }
 
-    if (!targetAddress.startsWith('ANP/')) {
+    let runAuto = opts.auto;
+    if (runAuto === undefined) {
+      const autoInput = await prompt("\n👉 Let Agent Q negotiate autonomously? (Y/n): ");
+      runAuto = autoInput.toLowerCase() !== 'n';
+    }
+
+    const core = getClinchCore(cfg);
+
+    // ── CASCADING ITERATIVE CASCADE TRIGGER (Sequential Squeeze vs. Parallel Concurrency) ──
+    if (!targetAddress && opts.category) {
+        let maxSellers = 3;
+        let strategy = 'sequential';
+
+        if (opts.parallel && !opts.squeeze) {
+            maxSellers = parseInt(opts.parallel);
+            strategy = 'parallel';
+            console.log(c.yellow(`🤖 Parallel Mode: Handshaking concurrently with top ${maxSellers} sellers for "${opts.category}"...\n`));
+        } else {
+            maxSellers = parseInt(opts.squeeze || '3');
+            strategy = 'sequential';
+            console.log(c.yellow(`🤖 Squeeze Mode: Sequentially bargaining across top ${maxSellers} sellers for "${opts.category}"...\n`));
+        }
+        
+        if (runAuto) {
+            await core.sandbox({ modelPath: cfg.modelPath });
+        } else {
+            await core.initialize(cfg.token);
+        }
+
+        const bestDeal = await core.negotiateCascade(opts.category, constraints, maxSellers, strategy);
+        
+        if (bestDeal) {
+            console.log(c.green(c.bold(`\n🏆 CASCADE COMPLETE: Secured optimal deal with ${bestDeal.sellerId} at $${bestDeal.finalPrice}!`)));
+        } else {
+            console.log(c.red(`\n✗ Cascade completed without any successful deals.`));
+        }
+        process.exit(0);
+    }
+
+    // ── STANDARD ONE-ON-ONE HANDSHAKE ──
+    if (targetAddress && !targetAddress.startsWith('ANP/')) {
         console.error(c.red(`\n✗ Invalid Address: ${targetAddress}`));
         console.error("  Address MUST include the protocol mode prefix.");
         console.error("  Example: ANP/C.amazon.anp\n");
         process.exit(1);
-    }
-
-    const core = getClinchCore(cfg);
-    let runAuto = opts.auto;
-    
-    if (runAuto === undefined) {
-      const autoInput = await prompt("\n👉 Let Agent Q negotiate autonomously? (Y/n): ");
-      runAuto = autoInput.toLowerCase() !== 'n';
     }
 
     if (runAuto) {
@@ -304,7 +412,7 @@ program
 
     core.on('session_started', ({ sessionId }) => {
       console.log(c.green(`\n✓ Session started: ${c.bold(sessionId)}`));
-      saveSessionState(sessionId, core); // Initial save
+      saveSessionState(sessionId, core); 
     });
 
     core.on('callback_received', ({ sessionId }) => saveSessionState(sessionId, core));
@@ -400,9 +508,61 @@ program
     }
   });
 
+// ── KEY VAULT COMMANDS (Blind Key Pass Management) ───────────
+program
+  .command('key')
+  .description('Manage third-party API credentials (Blind Key Pass vault)')
+  .option('--set', 'Interactively save a new API key credential')
+  .option('--list', 'List domains with registered local credentials')
+  .option('--remove <domain>', 'Delete a credential from your local vault')
+  .action(async (opts) => {
+    const cfg = requireConfig(); 
+    const secrets = loadSecrets();
+
+    if (opts.remove) {
+      const domain = opts.remove.toLowerCase().trim();
+      if (secrets[domain]) {
+        delete secrets[domain];
+        saveSecrets(secrets);
+        console.log(c.green(`✓ Credential vault cleared for domain: ${domain}`));
+      } else {
+        console.log(c.yellow(`No credential found for domain: ${domain}`));
+      }
+      return;
+    }
+
+    if (opts.list) {
+      const entries = Object.entries(secrets);
+      if (entries.length === 0) return console.log(c.yellow('Your Blind Key Pass vault is empty.'));
+      console.log(c.bold('\n🔑 Registered Blind Key Credentials:\n'));
+      entries.forEach(([domain, s]) => {
+        console.log(`  - ${c.cyan(domain)} (${c.dim(s.name || 'unnamed')})`);
+      });
+      console.log('');
+      return;
+    }
+
+    // Default: Interactive configuration
+    console.log(c.bold('\n🔑 Register a local Blind Key Pass credential'));
+    console.log(c.dim('   Your credentials are AES-GCM encrypted and bound to this hardware locally.\n'));
+
+    const domain = await prompt('👉 Target Domain (e.g. apify.anp): ');
+    if (!domain) return;
+    const normalizedDomain = domain.toLowerCase().trim();
+
+    const name = await prompt('👉 Key Label (e.g. Apify Production Token): ');
+    const value = await prompt('👉 Secret Value / API Key: ');
+    if (!value) return;
+
+    secrets[normalizedDomain] = { key: value, name: name || 'Unnamed Key' };
+    saveSecrets(secrets);
+
+    console.log(c.green(`\n✓ Key registered! Handshakes targeting ${normalizedDomain} will silently inject this token.`));
+  });
+
 program
   .name('clinch')
   .description('Clinch Protocol — Agent Negotiation CLI')
-  .version('0.4.0');
+  .version('0.1.0');
 
 program.parse();

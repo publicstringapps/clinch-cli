@@ -19,6 +19,6 @@
   "dependencies": {
     "commander": "^14.0.3",
     "node-llama-cpp": "^3.18.1",
-    "clinch-core": "0.6.2"
+    "clinch-core": "0.7.0"
   }
 }
