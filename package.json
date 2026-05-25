@@ -6,7 +6,7 @@
 
 
   "name": "agent-clinch",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Clinch Protocol CLI — agent negotiation from your terminal",
   "main": "cli.js",
   "bin": {
