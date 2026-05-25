@@ -117,7 +117,7 @@ function requireConfig() {
 
 function getClinchCore(cfg) {
   let ClinchCoreModule;
-  try { ClinchCoreModule = require('clinch-core'); } 
+  try { ClinchCoreModule = require('clinch-core'); }
   catch {
     console.error('clinch-core not found. Ensure it is linked or installed.');
     process.exit(1);
@@ -133,7 +133,7 @@ function getClinchCore(cfg) {
 
   core.on('log', msg => console.log(msg));
   core.on('error', err => console.error('Error:', err.message));
-  
+
   return core;
 }
 
@@ -149,7 +149,7 @@ function prompt(question) {
 async function parseIntentWithLLM(userInput, modelPath) {
   console.log(c.dim("\n[Agent Q] Booting local parser model to analyze your request..."));
   let nodeLlama;
-  try { nodeLlama = await import('node-llama-cpp'); } 
+  try { nodeLlama = await import('node-llama-cpp'); }
   catch (e) {
     console.error(c.red("\nError: node-llama-cpp is required for conversational parsing."));
     console.error("Please run: npm install -g node-llama-cpp\n");
@@ -348,10 +348,10 @@ program
         targetAddress = `ANP/C.${sellers[parseInt(selection) - 1].agent_id}`;
       }
     } else {
-      constraints = { 
-        intent: 'purchase', 
-        item: opts.item || 'Item', 
-        max_budget: parseFloat(budget || 100) 
+      constraints = {
+        intent: 'purchase',
+        item: opts.item || 'Item',
+        max_budget: parseFloat(budget || 100)
       };
       if (opts.category) constraints.category = opts.category;
     }
@@ -378,7 +378,7 @@ program
             strategy = 'sequential';
             console.log(c.yellow(`🤖 Squeeze Mode: Sequentially bargaining across top ${maxSellers} sellers for "${opts.category}"...\n`));
         }
-        
+
         if (runAuto) {
             await core.sandbox({ modelPath: cfg.modelPath });
         } else {
@@ -386,7 +386,7 @@ program
         }
 
         const bestDeal = await core.negotiateCascade(opts.category, constraints, maxSellers, strategy);
-        
+
         if (bestDeal) {
             console.log(c.green(c.bold(`\n🏆 CASCADE COMPLETE: Secured optimal deal with ${bestDeal.sellerId} at $${bestDeal.finalPrice}!`)));
         } else {
@@ -412,11 +412,11 @@ program
 
     core.on('session_started', ({ sessionId }) => {
       console.log(c.green(`\n✓ Session started: ${c.bold(sessionId)}`));
-      saveSessionState(sessionId, core); 
+      saveSessionState(sessionId, core);
     });
 
     core.on('callback_received', ({ sessionId }) => saveSessionState(sessionId, core));
-    
+
     core.on('session_closed', ({ sessionId, outcome, finalPrice }) => {
       saveSessionState(sessionId, core);
       if (outcome === 'deal') {
@@ -438,10 +438,10 @@ program
       console.log(c.bold('\nManual mode — type a price to counter, or "exit" / "accept":\n'));
       const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
       rl.on('line', async (cmd) => {
-        if (cmd === 'exit') { 
-          await core.exitSession(sessionId); 
+        if (cmd === 'exit') {
+          await core.exitSession(sessionId);
           saveSessionState(sessionId, core);
-          process.exit(0); 
+          process.exit(0);
         }
         else if (cmd === 'accept') { console.log(c.green(`Accepting...`)); rl.close(); }
         else {
@@ -462,7 +462,7 @@ program
     const sessions = loadSessions();
     const ids = Object.keys(sessions);
     if (ids.length === 0) return console.log(c.yellow('No saved sessions found.'));
-    
+
     console.log(c.bold(`Found ${ids.length} session(s):\n`));
     ids.forEach(id => {
       const s = JSON.parse(sessions[id].state);
@@ -478,7 +478,7 @@ program
   .action(async (sessionId, opts) => {
     const cfg = requireConfig();
     const sessions = loadSessions();
-    
+
     if (!sessions[sessionId]) {
       console.error(c.red(`Session ${sessionId} not found in local store.`));
       process.exit(1);
@@ -516,7 +516,7 @@ program
   .option('--list', 'List domains with registered local credentials')
   .option('--remove <domain>', 'Delete a credential from your local vault')
   .action(async (opts) => {
-    const cfg = requireConfig(); 
+    const cfg = requireConfig();
     const secrets = loadSecrets();
 
     if (opts.remove) {
