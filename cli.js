@@ -205,6 +205,7 @@ function downloadFile(url, dest) {
 async function promptAI(systemPrompt, userText, cfg) {
   if (cfg.engine === 'ollama') {
     try {
+      console.log(c.dim(`\n[Agent Q] Dispatching request to local Ollama (${cfg.ollamaModel || 'llama3'})...`));
       const res = await fetch('http://127.0.0.1:11434/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -233,6 +234,8 @@ async function promptAI(systemPrompt, userText, cfg) {
       await downloadFile(cfg.ggufUrl || "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf", resolvedPath);
     }
 
+    console.log(c.dim(`\n[Agent Q] Loading GGUF model into memory (this may take a few seconds)...`));
+    
     let nodeLlama;
     try { nodeLlama = await import('node-llama-cpp'); }
     catch (e) {
@@ -250,6 +253,8 @@ async function promptAI(systemPrompt, userText, cfg) {
       chatWrapper: new nodeLlama.ChatMLChatWrapper()
     });
 
+    console.log(c.dim(`[Agent Q] Model loaded. Analyzing intent...`));
+
     let responseText = "";
     await session.prompt(userText, { maxTokens: 1500, onTextChunk: (chunk) => { responseText += chunk; } });
     return responseText;
@@ -257,24 +262,42 @@ async function promptAI(systemPrompt, userText, cfg) {
 }
 
 async function parseIntentWithLLM(userInput, cfg) {
-  console.log(c.dim(`\n[Agent Q] Booting local parser (${cfg.engine}) to analyze your request...`));
-  const systemPrompt = `You are a structured data extractor. Convert the user's conversational intent into a strict JSON schema.
-Your response MUST be ONLY valid JSON matching this schema exactly. Do not output conversational text.
+  const systemPrompt = `You are a structured data extractor for a purchasing agent.
+Analyze the user's input. 
 
-JSON Schema:
+If the user says a greeting (like "hi" or "hello") or does not clearly specify BOTH an item and a budget, output EXACTLY this JSON:
+{"error": "Please specify what you want to buy and your maximum budget (e.g. 'Get me a laptop for under $500')."}
+
+If they DO specify a purchase intent, output EXACTLY this JSON schema:
 {
   "intent": "purchase",
-  "category": "string (e.g. domain_name, electronics, kitchen_appliance)",
-  "item": "string (the exact item, website, or product they want)",
-  "max_budget": number (extract budget numeric value)
-}`;
+  "category": "string (e.g. electronics, domain_names, software, etc)",
+  "item": "string (the actual item requested)",
+  "max_budget": number (integer representing the max budget)
+}
+Your response MUST be ONLY valid JSON. Do not include conversational text.`;
 
   try {
     const rawRes = await promptAI(systemPrompt, userInput, cfg);
     const cleanJson = rawRes.replace(/```json|```/g, "").trim();
-    return JSON.parse(cleanJson);
+    
+    const parsed = JSON.parse(cleanJson);
+    
+    // Check if the LLM flagged the input as a greeting/unclear
+    if (parsed.error) {
+        console.log(c.yellow(`\n[Agent Q] ${parsed.error}`));
+        return null;
+    }
+    
+    // Fallback validation to ensure it didn't hallucinate missing fields
+    if (!parsed.item || !parsed.max_budget) {
+        console.log(c.yellow(`\n[Agent Q] I couldn't quite figure out the item or budget from your request. Please be specific!`));
+        return null;
+    }
+    
+    return parsed;
   } catch (e) {
-    console.error(c.red("Failed to parse intent. Falling back to manual entry."));
+    console.error(c.red("\n[Agent Q] Failed to parse intent correctly. Falling back to manual entry."));
     return null;
   }
 }
@@ -408,7 +431,7 @@ program
 
       const parsed = await parseIntentWithLLM(naturalIntent, cfg);
       if (!parsed) {
-        console.error(c.red("✗ Error parsing constraints. Please try manual entry."));
+        // We failed to parse correctly (or the user typed hi), gracefully exit rather than crashing
         process.exit(1);
       }
 
@@ -423,7 +446,7 @@ program
       constraints = parsed;
       budget = parsed.max_budget;
 
-      console.log(c.dim(`\nQuerying registry for category "${parsed.category}"...`));
+      console.log(c.dim(`\n[Network] Querying registry for category "${parsed.category}"...`));
       const coreDiscovery = getClinchCore(cfg);
       await coreDiscovery.initialize(cfg.token);
       const results = await coreDiscovery.search(parsed.category);
@@ -483,10 +506,7 @@ program
              return;
         }
 
-        // Ask the core to build the context prompt, but evaluate it HERE in the CLI
         const promptStr = core.buildAgentPrompt(sessionId, incomingMessage);
-        console.log(c.dim(`\n[Agent Q] Evaluating turn ${session.currentTurn} with ${cfg.engine}...`));
-        
         const aiResponse = await promptAI(promptStr, incomingMessage, cfg);
         
         let price = null;
@@ -635,7 +655,6 @@ program
     console.log(c.yellow(`\nRehydrating Session ${c.bold(sessionId)}...\n`));
     if (opts.auto) {
         cfg = await ensureAIEngine(cfg);
-        // ... hook auto logic here if needed (omitted for brevity, handled heavily in negotiate)
     } 
 
     const core = getClinchCore(cfg);
