@@ -202,10 +202,13 @@ function downloadFile(url, dest) {
   });
 }
 
+// Global cache to prevent reloading the 1.1GB model on every chat turn
+let cachedLlamaModel = null;
+let cachedLlamaContext = null;
+
 async function promptAI(systemPrompt, userText, cfg) {
   if (cfg.engine === 'ollama') {
     try {
-      console.log(c.dim(`\n[Agent Q] Dispatching request to local Ollama (${cfg.ollamaModel || 'llama3'})...`));
       const res = await fetch('http://127.0.0.1:11434/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -234,8 +237,6 @@ async function promptAI(systemPrompt, userText, cfg) {
       await downloadFile(cfg.ggufUrl || "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf", resolvedPath);
     }
 
-    console.log(c.dim(`\n[Agent Q] Loading GGUF model into memory (this may take a few seconds)...`));
-    
     let nodeLlama;
     try { nodeLlama = await import('node-llama-cpp'); }
     catch (e) {
@@ -244,16 +245,22 @@ async function promptAI(systemPrompt, userText, cfg) {
       process.exit(1);
     }
 
-    const llama = await nodeLlama.getLlama();
-    const model = await llama.loadModel({ modelPath: resolvedPath });
-    const context = await model.createContext({ contextSize: 2048, threads: Math.max(1, os.cpus().length - 1) });
+    if (!cachedLlamaModel) {
+      const threads = Math.max(2, os.cpus().length - 1);
+      console.log(c.dim(`\n[Agent Q] Loading GGUF model into memory using ${threads} threads (this may take a few seconds)...`));
+      
+      const llama = await nodeLlama.getLlama();
+      cachedLlamaModel = await llama.loadModel({ modelPath: resolvedPath });
+      cachedLlamaContext = await cachedLlamaModel.createContext({ contextSize: 2048, threads: threads });
+      
+      console.log(c.dim(`[Agent Q] Model loaded. Analyzing...`));
+    }
+
     const session = new nodeLlama.LlamaChatSession({
-      contextSequence: context.getSequence(),
+      contextSequence: cachedLlamaContext.getSequence(),
       systemPrompt: systemPrompt,
       chatWrapper: new nodeLlama.ChatMLChatWrapper()
     });
-
-    console.log(c.dim(`[Agent Q] Model loaded. Analyzing intent...`));
 
     let responseText = "";
     await session.prompt(userText, { maxTokens: 1500, onTextChunk: (chunk) => { responseText += chunk; } });
@@ -262,18 +269,18 @@ async function promptAI(systemPrompt, userText, cfg) {
 }
 
 async function parseIntentWithLLM(userInput, cfg) {
-  const systemPrompt = `You are a structured data extractor for a purchasing agent.
-Analyze the user's input. 
+  const systemPrompt = `You are a structured data extractor for a smart network agent.
+Analyze the user's input. They might want to purchase an item, schedule a P2P service, book something, or query a node.
 
-If the user says a greeting (like "hi" or "hello") or does not clearly specify BOTH an item and a budget, output EXACTLY this JSON:
-{"error": "Please specify what you want to buy and your maximum budget (e.g. 'Get me a laptop for under $500')."}
+If the user says a greeting (like "hi" or "hello") or their request is too vague to act on, output EXACTLY this JSON:
+{"error": "Please specify what you want to do (e.g. 'Get me a laptop under $500', or 'Schedule a call with @algeru on ginger')."}
 
-If they DO specify a purchase intent, output EXACTLY this JSON schema:
+If they DO specify a clear intent (purchase, scheduling, booking, data retrieval), output EXACTLY this JSON schema:
 {
-  "intent": "purchase",
-  "category": "string (e.g. electronics, domain_names, software, etc)",
-  "item": "string (the actual item requested)",
-  "max_budget": number (integer representing the max budget)
+  "intent": "string (e.g. purchase, schedule, booking)",
+  "category": "string (e.g. electronics, scheduling, p2p_services, domain_names)",
+  "item": "string (the actual item, target, or service requested)",
+  "max_budget": number (integer representing max budget. If none mentioned, use 0)
 }
 Your response MUST be ONLY valid JSON. Do not include conversational text.`;
 
@@ -283,22 +290,18 @@ Your response MUST be ONLY valid JSON. Do not include conversational text.`;
     
     const parsed = JSON.parse(cleanJson);
     
-    // Check if the LLM flagged the input as a greeting/unclear
+    // Allow the loop to catch errors and reprompt the user interactively
     if (parsed.error) {
-        console.log(c.yellow(`\n[Agent Q] ${parsed.error}`));
-        return null;
+        return { error: parsed.error };
     }
     
-    // Fallback validation to ensure it didn't hallucinate missing fields
-    if (!parsed.item || !parsed.max_budget) {
-        console.log(c.yellow(`\n[Agent Q] I couldn't quite figure out the item or budget from your request. Please be specific!`));
-        return null;
+    if (!parsed.item) {
+        return { error: "I couldn't figure out the exact item or service you want. Please be specific!" };
     }
     
     return parsed;
   } catch (e) {
-    console.error(c.red("\n[Agent Q] Failed to parse intent correctly. Falling back to manual entry."));
-    return null;
+    return { error: "Failed to parse intent correctly. Please try formatting your request more simply." };
   }
 }
 
@@ -424,37 +427,51 @@ program
 
       cfg = await ensureAIEngine(cfg);
 
-      const naturalIntent = await prompt("👉 Describe what you want to negotiate\n" +
+      let naturalIntent = await prompt("👉 Describe what you want to negotiate\n" +
         c.dim("   (e.g., 'Get me the domain cartpost.shop under 80 dollars')\n\n💬: "));
 
-      if (!naturalIntent) process.exit(1);
+      // Conversational loop: keeps asking until a valid intent is parsed
+      while (true) {
+        if (!naturalIntent) process.exit(1);
 
-      const parsed = await parseIntentWithLLM(naturalIntent, cfg);
-      if (!parsed) {
-        // We failed to parse correctly (or the user typed hi), gracefully exit rather than crashing
-        process.exit(1);
+        const parsed = await parseIntentWithLLM(naturalIntent, cfg);
+        
+        if (!parsed) {
+            naturalIntent = await prompt(c.yellow("\n[Agent Q] Something went wrong. Let's try again. What are you looking for?\n💬: "));
+            continue;
+        }
+
+        if (parsed.error) {
+            naturalIntent = await prompt(c.yellow(`\n[Agent Q] ${parsed.error}\n💬: `));
+            continue;
+        }
+
+        console.log(c.bold("\n📊 Extracted Intention Context:"));
+        console.log(`  - Intent:     ${c.cyan(parsed.intent || 'purchase')}`);
+        console.log(`  - Category:   ${c.cyan(parsed.category)}`);
+        console.log(`  - Target Item: ${c.cyan(parsed.item)}`);
+        console.log(`  - Max Budget:  ${c.green("$" + parsed.max_budget)}\n`);
+
+        const confirm = await prompt("👉 Is this correct? (Y/n): ");
+        if (confirm.toLowerCase() === 'n') {
+            naturalIntent = await prompt(c.yellow("\n[Agent Q] Got it. Let's try again. What are you looking for?\n💬: "));
+            continue;
+        }
+
+        constraints = parsed;
+        budget = parsed.max_budget;
+        break; // Exit loop on confirmation
       }
 
-      console.log(c.bold("\n📊 Extracted Intention Context:"));
-      console.log(`  - Category:   ${c.cyan(parsed.category)}`);
-      console.log(`  - Target Item: ${c.cyan(parsed.item)}`);
-      console.log(`  - Max Budget:  ${c.green("$" + parsed.max_budget)}\n`);
-
-      const confirm = await prompt("👉 Is this correct? (Y/n): ");
-      if (confirm.toLowerCase() === 'n') process.exit(0);
-
-      constraints = parsed;
-      budget = parsed.max_budget;
-
-      console.log(c.dim(`\n[Network] Querying registry for category "${parsed.category}"...`));
+      console.log(c.dim(`\n[Network] Querying registry for category "${constraints.category}"...`));
       const coreDiscovery = getClinchCore(cfg);
       await coreDiscovery.initialize(cfg.token);
-      const results = await coreDiscovery.search(parsed.category);
+      const results = await coreDiscovery.search(constraints.category);
       coreDiscovery.disconnect();
 
       const sellers = results.results || [];
       if (sellers.length === 0) {
-        console.log(c.yellow(`\nNo sellers found for "${parsed.category}".`));
+        console.log(c.yellow(`\nNo sellers found for "${constraints.category}".`));
         targetAddress = await prompt("👉 Enter address manually (e.g. ANP/C.amazon.anp): ");
       } else {
         console.log(c.bold(`\nAvailable sellers:`));
@@ -490,12 +507,11 @@ program
 
         const incomingMessage = payload.message || JSON.stringify(payload);
         
-        // Extract basic price to check constraints
         const priceMatch = incomingMessage.match(/price\s*:\s*\$?(\d+(?:\.\d{2})?)/i);
         if (priceMatch) session.lastKnownPrice = parseFloat(priceMatch[1]);
 
         if (session.lastKnownPrice > 0 && session.lastKnownPrice <= session.constraints.max_budget) {
-            console.log(c.green(`\n🎉 [Agent Q] Seller met budget conditions! Securing deal.`));
+            console.log(c.green(`\n🎉 [Agent Q] Target met constraints! Securing deal.`));
             await core.sendCounter(sessionId, session.lastKnownPrice, "I accept this offer.");
             return;
         }
@@ -507,10 +523,12 @@ program
         }
 
         const promptStr = core.buildAgentPrompt(sessionId, incomingMessage);
+        
+        console.log(c.dim(`\n[Agent Q] Evaluating turn ${session.currentTurn}...`));
         const aiResponse = await promptAI(promptStr, incomingMessage, cfg);
         
         let price = null;
-        let msg = "Counter offer";
+        let msg = "Counter offer / Clarification requested";
         
         try {
             const clean = aiResponse.replace(/```json|```/g, "").trim();
@@ -525,8 +543,8 @@ program
         if (price) {
             await core.sendCounter(sessionId, Math.min(price, session.constraints.max_budget), msg);
         } else {
-            console.log(c.yellow(`[Agent Q] Failed to parse price constraint. Sending safe fallback.`));
-            await core.sendCounter(sessionId, session.lastKnownPrice * 0.9, "Can you do slightly better?");
+            console.log(c.yellow(`[Agent Q] Sending safe fallback response.`));
+            await core.sendCounter(sessionId, session.lastKnownPrice * 0.9 || 0, "Can you provide more details?");
         }
       });
     }
@@ -539,20 +557,20 @@ program
         if (opts.parallel && !opts.squeeze) {
             maxSellers = parseInt(opts.parallel);
             strategy = 'parallel';
-            console.log(c.yellow(`🤖 Parallel Mode: Handshaking concurrently with top ${maxSellers} sellers for "${opts.category}"...\n`));
+            console.log(c.yellow(`🤖 Parallel Mode: Handshaking concurrently with top ${maxSellers} nodes for "${opts.category}"...\n`));
         } else {
             maxSellers = parseInt(opts.squeeze || '3');
             strategy = 'sequential';
-            console.log(c.yellow(`🤖 Squeeze Mode: Sequentially bargaining across top ${maxSellers} sellers for "${opts.category}"...\n`));
+            console.log(c.yellow(`🤖 Squeeze Mode: Sequentially communicating across top ${maxSellers} nodes for "${opts.category}"...\n`));
         }
 
         await core.initialize(cfg.token);
         const bestDeal = await core.negotiateCascade(opts.category, constraints, maxSellers, strategy);
 
         if (bestDeal) {
-            console.log(c.green(c.bold(`\n🏆 CASCADE COMPLETE: Secured optimal deal with ${bestDeal.sellerId} at $${bestDeal.finalPrice}!`)));
+            console.log(c.green(c.bold(`\n🏆 CASCADE COMPLETE: Secured optimal agreement with ${bestDeal.sellerId} at $${bestDeal.finalPrice}!`)));
         } else {
-            console.log(c.red(`\n✗ Cascade completed without any successful deals.`));
+            console.log(c.red(`\n✗ Cascade completed without any successful agreements.`));
         }
         process.exit(0);
     }
@@ -575,15 +593,15 @@ program
     if (!runAuto) {
         core.on('callback_received', ({ sessionId, payload }) => {
             saveSessionState(sessionId, core);
-            console.log(c.cyan(`\n💬 Seller says:`), payload);
-            console.log(c.dim(`\nType a price to counter, or "exit" / "accept":`));
+            console.log(c.cyan(`\n💬 Node says:`), payload);
+            console.log(c.dim(`\nType a price/response to counter, or "exit" / "accept":`));
         });
     }
 
     core.on('session_closed', ({ sessionId, outcome, finalPrice }) => {
       saveSessionState(sessionId, core);
       if (outcome === 'deal') {
-        console.log(c.green(c.bold(`\n🎉 DEAL SECURED at $${finalPrice}`)));
+        console.log(c.green(c.bold(`\n🎉 AGREEMENT SECURED at $${finalPrice}`)));
         process.exit(0);
       }
     });
@@ -598,7 +616,7 @@ program
     const sessionId = await core.negotiate(targetAddress, constraints);
 
     if (!runAuto) {
-      console.log(c.bold('\nManual mode — await seller response, then type a price to counter, or "exit" / "accept".\n'));
+      console.log(c.bold('\nManual mode — await response, then type a counter-offer, or "exit" / "accept".\n'));
       const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
       rl.on('line', async (cmd) => {
         if (cmd === 'exit') {
@@ -611,6 +629,10 @@ program
           const price = parseFloat(cmd);
           if (!isNaN(price)) {
               await core.sendCounter(sessionId, price, 'Counter offer');
+              saveSessionState(sessionId, core);
+          } else {
+              // Allows sending non-numeric replies if needed
+              await core.sendCounter(sessionId, 0, cmd);
               saveSessionState(sessionId, core);
           }
         }
@@ -665,7 +687,7 @@ program
     core.on('callback_received', ({ id }) => saveSessionState(id, core));
     core.on('session_closed', ({ outcome, finalPrice }) => {
       saveSessionState(sessionId, core);
-      if (outcome === 'deal') console.log(c.green(c.bold(`\n🎉 DEAL SECURED at $${finalPrice}`)));
+      if (outcome === 'deal') console.log(c.green(c.bold(`\n🎉 AGREEMENT SECURED at $${finalPrice}`)));
       process.exit(0);
     });
 
