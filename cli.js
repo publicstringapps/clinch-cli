@@ -234,7 +234,7 @@ program
     const existing = loadConfig();
     if (existing) {
       const overwrite = await prompt('Config already exists. Overwrite? (y/N): ');
-      if (overwrite.toLowerCase() !== 'y') { console.log('Aborted.'); return; }
+      if (overwrite.toLowerCase() !== 'y') { console.log('Aborted.'); process.exit(0); }
     }
 
     const registryUrl = opts.registry || 'https://everydaytok-agentq-core-logics.hf.space';
@@ -260,6 +260,13 @@ program
 
     console.log('\n' + c.green('✓ Agent initialized successfully'));
     console.log(c.dim(`  Public key: ${config.pubKey.substring(0,16)}...`));
+    
+    console.log('\n' + c.bold('🚀 Next Steps:'));
+    console.log(`  1. Start a natural language negotiation:  ${c.cyan('clinch negotiate')}`);
+    console.log(`  2. Search the network for sellers:        ${c.cyan('clinch query "electronics"')}`);
+    console.log(`  3. Manage blind API key vaults:           ${c.cyan('clinch key')}`);
+    
+    process.exit(0);
   });
 
 program
@@ -277,7 +284,10 @@ program
     core.disconnect();
 
     const sellers = results.results || [];
-    if (!sellers.length) return console.log(c.yellow('No sellers found for this category.'));
+    if (!sellers.length) {
+      console.log(c.yellow('No sellers found for this category.'));
+      process.exit(0);
+    }
 
     console.log(c.bold(`Found ${sellers.length} seller(s):\n`));
     sellers.forEach((s, i) => {
@@ -286,6 +296,8 @@ program
       console.log(`     ANP address: ${c.yellow('ANP/C.' + s.agent_id)}`);
       console.log(`     Modes: ${(s.supported_modes || []).join(', ')}`);
     });
+    
+    process.exit(0);
   });
 
 program
@@ -340,7 +352,7 @@ program
       const sellers = results.results || [];
       if (sellers.length === 0) {
         console.log(c.yellow(`\nNo sellers found for "${parsed.category}".`));
-        targetAddress = await prompt("👉 Enter address manually (e.g. ANP/A.amazon.anp): ");
+        targetAddress = await prompt("👉 Enter address manually (e.g. ANP/C.amazon.anp): ");
       } else {
         console.log(c.bold(`\nAvailable sellers:`));
         sellers.forEach((s, idx) => console.log(`  ${idx + 1}. ${c.cyan(s.agent_id)}`));
@@ -461,13 +473,18 @@ program
   .action(() => {
     const sessions = loadSessions();
     const ids = Object.keys(sessions);
-    if (ids.length === 0) return console.log(c.yellow('No saved sessions found.'));
+    if (ids.length === 0) {
+      console.log(c.yellow('No saved sessions found.'));
+      process.exit(0);
+    }
 
     console.log(c.bold(`Found ${ids.length} session(s):\n`));
     ids.forEach(id => {
       const s = JSON.parse(sessions[id].state);
       console.log(`  ${c.cyan(id)} - Target: ${s.sellerId} | Status: ${c.bold(s.status)} | Turn: ${s.currentTurn}`);
     });
+    
+    process.exit(0);
   });
 
 program
@@ -528,18 +545,21 @@ program
       } else {
         console.log(c.yellow(`No credential found for domain: ${domain}`));
       }
-      return;
+      process.exit(0);
     }
 
     if (opts.list) {
       const entries = Object.entries(secrets);
-      if (entries.length === 0) return console.log(c.yellow('Your Blind Key Pass vault is empty.'));
+      if (entries.length === 0) {
+        console.log(c.yellow('Your Blind Key Pass vault is empty.'));
+        process.exit(0);
+      }
       console.log(c.bold('\n🔑 Registered Blind Key Credentials:\n'));
       entries.forEach(([domain, s]) => {
         console.log(`  - ${c.cyan(domain)} (${c.dim(s.name || 'unnamed')})`);
       });
       console.log('');
-      return;
+      process.exit(0);
     }
 
     // Default: Interactive configuration
@@ -547,17 +567,18 @@ program
     console.log(c.dim('   Your credentials are AES-GCM encrypted and bound to this hardware locally.\n'));
 
     const domain = await prompt('👉 Target Domain (e.g. apify.anp): ');
-    if (!domain) return;
+    if (!domain) process.exit(0);
     const normalizedDomain = domain.toLowerCase().trim();
 
     const name = await prompt('👉 Key Label (e.g. Apify Production Token): ');
     const value = await prompt('👉 Secret Value / API Key: ');
-    if (!value) return;
+    if (!value) process.exit(0);
 
     secrets[normalizedDomain] = { key: value, name: name || 'Unnamed Key' };
     saveSecrets(secrets);
 
     console.log(c.green(`\n✓ Key registered! Handshakes targeting ${normalizedDomain} will silently inject this token.`));
+    process.exit(0);
   });
 
 program
